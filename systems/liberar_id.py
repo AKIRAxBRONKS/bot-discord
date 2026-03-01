@@ -11,6 +11,7 @@
 
 from typing import Optional
 import asyncio
+import os  # ✅ necessário pro PORT do Railway
 
 import discord
 from discord.ext import commands
@@ -19,9 +20,9 @@ import config.ids as ids
 from aiohttp import web
 
 
-# ✅ no mesmo PC: pode usar 127.0.0.1 ou 0.0.0.0
+# ✅ Railway: precisa bindar em 0.0.0.0 e usar PORT quando existir
 API_HOST = "0.0.0.0"
-API_PORT = 35555
+API_PORT = int(os.getenv("PORT", "35555"))  # ✅ local=35555 | Railway=PORT
 
 PANEL_TITLE = "🔐 LIBERAÇÃO DE ID"
 BUTTON_CUSTOM_ID = "btn_liberar_id_v1"
@@ -162,7 +163,6 @@ class LiberarIdSystem(commands.Cog):
             await self.site.start()
             print(f"✅ [WL] API online: http://127.0.0.1:{API_PORT}/wl/check")
         except OSError as e:
-            # porta ocupada / sem permissão
             print(f"❌ [WL] Não consegui abrir a API na porta {API_PORT}: {e}")
         except Exception as e:
             print(f"❌ [WL] Erro ao iniciar API: {type(e).__name__}: {e}")
@@ -278,7 +278,14 @@ class LiberarIdSystem(commands.Cog):
         if not guild:
             return web.json_response({"ok": False, "error": "guild_not_found"}, status=500)
 
+        # ✅ não depender só de cache
         member = guild.get_member(int(discord_id))
+        if not member:
+            try:
+                member = await guild.fetch_member(int(discord_id))
+            except:
+                member = None
+
         if not member:
             return web.json_response({"ok": True, "whitelisted": False, "reason": "not_in_guild"}, status=200)
 
