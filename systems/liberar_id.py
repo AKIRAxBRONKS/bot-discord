@@ -19,10 +19,8 @@ import config.ids as ids
 
 from aiohttp import web
 
-
-# ✅ Railway: precisa bindar em 0.0.0.0 e usar PORT quando existir
 API_HOST = "0.0.0.0"
-API_PORT = int(os.getenv("PORT", "35555"))  # ✅ local=35555 | Railway=PORT
+API_PORT = int(os.getenv("PORT", "35555"))
 
 PANEL_TITLE = "🔐 LIBERAÇÃO DE ID"
 BUTTON_CUSTOM_ID = "btn_liberar_id_v1"
