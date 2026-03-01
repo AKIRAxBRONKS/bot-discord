@@ -1,0 +1,285 @@
+{
+  "last_id": 7,
+  "forms": {
+    "1": {
+      "id": 1,
+      "user_id": 534472550215057429,
+      "user_tag": "bronks_gameplay",
+      "created_at": "2026-02-27T18:41:03.113341+00:00",
+      "status": "APROVADO",
+      "reviewer_id": 534472550215057429,
+      "reviewed_at": "2026-02-27T18:41:42.937967+00:00",
+      "review_reason": "BHBI",
+      "answers": [
+        {
+          "q": "Qual é o seu nome no RP?",
+          "a": "OPK"
+        },
+        {
+          "q": "Qual é o seu ID?",
+          "a": "JBJ"
+        },
+        {
+          "q": "Qual sua idade?",
+          "a": "HHJBU"
+        },
+        {
+          "q": "Qual seu horário disponível (dias/horas)?",
+          "a": "HUUB"
+        },
+        {
+          "q": "Você já foi staff antes? Se sim, onde e qual função?",
+          "a": "JBYJK"
+        },
+        {
+          "q": "Por que você quer entrar para a staff?",
+          "a": "YHBHBU"
+        },
+        {
+          "q": "Conte um pouco sobre você / experiência / maturidade.",
+          "a": "HUBYBYU"
+        }
+      ]
+    },
+    "2": {
+      "id": 2,
+      "user_id": 534472550215057429,
+      "user_tag": "bronks_gameplay",
+      "created_at": "2026-02-27T18:50:00.816631+00:00",
+      "status": "APROVADO",
+      "reviewer_id": 534472550215057429,
+      "reviewed_at": "2026-02-27T18:51:15.932155+00:00",
+      "review_reason": "VNGCNBCBVN",
+      "answers": [
+        {
+          "q": "Qual é o seu nome no RP?",
+          "a": "RRR"
+        },
+        {
+          "q": "Qual é o seu ID?",
+          "a": "RRRR"
+        },
+        {
+          "q": "Qual sua idade?",
+          "a": "RRRRR"
+        },
+        {
+          "q": "Qual seu horário disponível (dias/horas)?",
+          "a": "RRRRETRH"
+        },
+        {
+          "q": "Você já foi staff antes? Se sim, onde e qual função?",
+          "a": "GHGFHSGDGH"
+        },
+        {
+          "q": "Por que você quer entrar para a staff?",
+          "a": "GHGFHGFG"
+        },
+        {
+          "q": "Conte um pouco sobre você / experiência / maturidade.",
+          "a": "GFGSG"
+        }
+      ]
+    },
+    "3": {
+      "id": 3,
+      "user_id": 534472550215057429,
+      "user_tag": "bronks_gameplay",
+      "created_at": "2026-02-27T19:22:04.599824+00:00",
+      "status": "APROVADO",
+      "reviewer_id": 534472550215057429,
+      "reviewed_at": "2026-02-27T19:22:27.214793+00:00",
+      "review_reason": "DFDFS",
+      "answers": [
+        {
+          "q": "Qual é o seu nome no RP?",
+          "a": "DSDSD"
+        },
+        {
+          "q": "Qual é o seu ID?",
+          "a": "SDSD"
+        },
+        {
+          "q": "Qual sua idade?",
+          "a": "DSD"
+        },
+        {
+          "q": "Qual seu horário disponível (dias/horas)?",
+          "a": "SDSD"
+        },
+        {
+          "q": "Você já foi staff antes? Se sim, onde e qual função?",
+          "a": "SD"
+        },
+        {
+          "q": "Por que você quer entrar para a staff?",
+          "a": "SD"
+        },
+        {
+          "q": "Conte um pouco sobre você / experiência / maturidade.",
+          "a": "SD"
+        }
+      ]
+    },
+    "4": {
+      "id": 4,
+      "user_id": 534472550215057429,
+      "user_tag": "bronks_gameplay",
+      "created_at": "2026-02-27T19:24:43.307796+00:00",
+      "status": "APROVADO",
+      "reviewer_id": 534472550215057429,
+      "reviewed_at": "2026-02-27T19:25:08.598603+00:00",
+      "review_reason": "JHIO",
+      "answers": [
+        {
+          "q": "Qual é o seu nome no RP?",
+          "a": "S"
+        },
+        {
+          "q": "Qual é o seu ID?",
+          "a": "S"
+        },
+        {
+          "q": "Qual sua idade?",
+          "a": "S"
+        },
+        {
+          "q": "Qual seu horário disponível (dias/horas)?",
+          "a": "S"
+        },
+        {
+          "q": "Você já foi staff antes? Se sim, onde e qual função?",
+          "a": "S"
+        },
+        {
+          "q": "Por que você quer entrar para a staff?",
+          "a": "S"
+        },
+        {
+          "q": "Conte um pouco sobre você / experiência / maturidade.",
+          "a": "K"
+        }
+      ]
+    },
+    "5": {
+      "id": 5,
+      "user_id": 534472550215057429,
+      "user_tag": "bronks_gameplay",
+      "created_at": "2026-02-27T19:30:33.692611+00:00",
+      "status": "APROVADO",
+      "reviewer_id": 534472550215057429,
+      "reviewed_at": "2026-02-27T19:30:58.588402+00:00",
+      "review_reason": "HH",
+      "answers": [
+        {
+          "q": "Qual é o seu nome no RP?",
+          "a": "F"
+        },
+        {
+          "q": "Qual é o seu ID?",
+          "a": "F"
+        },
+        {
+          "q": "Qual sua idade?",
+          "a": "F"
+        },
+        {
+          "q": "Qual seu horário disponível (dias/horas)?",
+          "a": "F"
+        },
+        {
+          "q": "Você já foi staff antes? Se sim, onde e qual função?",
+          "a": "F"
+        },
+        {
+          "q": "Por que você quer entrar para a staff?",
+          "a": "F"
+        },
+        {
+          "q": "Conte um pouco sobre você / experiência / maturidade.",
+          "a": "F"
+        }
+      ]
+    },
+    "6": {
+      "id": 6,
+      "user_id": 534472550215057429,
+      "user_tag": "bronks_gameplay",
+      "created_at": "2026-02-27T19:33:17.946518+00:00",
+      "status": "APROVADO",
+      "reviewer_id": 534472550215057429,
+      "reviewed_at": "2026-02-27T19:33:36.289637+00:00",
+      "review_reason": "DDD",
+      "answers": [
+        {
+          "q": "Qual é o seu nome no RP?",
+          "a": "S"
+        },
+        {
+          "q": "Qual é o seu ID?",
+          "a": "S"
+        },
+        {
+          "q": "Qual sua idade?",
+          "a": "S"
+        },
+        {
+          "q": "Qual seu horário disponível (dias/horas)?",
+          "a": "S"
+        },
+        {
+          "q": "Você já foi staff antes? Se sim, onde e qual função?",
+          "a": "S"
+        },
+        {
+          "q": "Por que você quer entrar para a staff?",
+          "a": "S"
+        },
+        {
+          "q": "Conte um pouco sobre você / experiência / maturidade.",
+          "a": "S"
+        }
+      ]
+    },
+    "7": {
+      "id": 7,
+      "user_id": 534472550215057429,
+      "user_tag": "bronks_gameplay",
+      "created_at": "2026-02-28T14:28:25.197948+00:00",
+      "status": "APROVADO",
+      "reviewer_id": 534472550215057429,
+      "reviewed_at": "2026-02-28T14:28:53.779781+00:00",
+      "review_reason": "Bem vindo",
+      "answers": [
+        {
+          "q": "Qual é o seu nome no RP?",
+          "a": "1"
+        },
+        {
+          "q": "Qual é o seu ID?",
+          "a": "1"
+        },
+        {
+          "q": "Qual sua idade?",
+          "a": "1"
+        },
+        {
+          "q": "Qual seu horário disponível (dias/horas)?",
+          "a": "1"
+        },
+        {
+          "q": "Você já foi staff antes? Se sim, onde e qual função?",
+          "a": "1"
+        },
+        {
+          "q": "Por que você quer entrar para a staff?",
+          "a": "1"
+        },
+        {
+          "q": "Conte um pouco sobre você / experiência / maturidade.",
+          "a": "1"
+        }
+      ]
+    }
+  }
+}
