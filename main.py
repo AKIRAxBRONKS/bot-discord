@@ -40,11 +40,11 @@ from dotenv import load_dotenv
 # =====================
 # CARREGA VARIÁVEIS
 # =====================
-load_dotenv()
+load_dotenv()  # ok manter pra rodar local
 TOKEN = os.getenv("TOKEN")
 
 if not TOKEN:
-    raise RuntimeError("❌ TOKEN não encontrado. Verifique o arquivo .env")
+    raise RuntimeError("❌ TOKEN não encontrado. Configure a variável TOKEN (Railway Variables ou .env local).")
 
 # =====================
 # CLOUDFLARED (TUNNEL)
@@ -133,8 +133,6 @@ bot = commands.Bot(
 # =====================
 @bot.event
 async def setup_hook():
-    # 🔥 inicia o túnel antes de carregar as extensões
-    start_cloudflared()
 
     extensoes = [
         "systems.tickets",
