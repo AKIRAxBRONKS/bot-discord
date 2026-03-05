@@ -11,28 +11,19 @@ from config import ids as IDS
 
 UTC = timezone.utc
 
-# -------------------------
-# Util: parse duração "1d2h30m"
-# -------------------------
-DUR_RE = re.compile(r"(?:(\d+)\s*d)?\s*(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?\s*(?:(\d+)\s*s)?", re.I)
+# ====== VISUAL (SEU MODELO) ======
+THUMB_URL = "https://i.imgur.com/tF85i5l.png"
+IMAGE_URL = "https://i.imgur.com/nxnvh7d.png"
+
+ADV_DURATION_DAYS = 30
+ADV_DURATION_SEC = ADV_DURATION_DAYS * 24 * 60 * 60
+
+# remove prefixos tipo: [ADM] Fulano | 22  /  (ADM) Fulano | 22
+NICK_PREFIX_RE = re.compile(r"^\s*[\[\(\{][^\]\)\}]{1,16}[\]\)\}]\s*", re.UNICODE)
 
 
-def parse_duration(text: str) -> int:
-    """
-    Retorna duração em segundos.
-    Aceita: 10m, 2h, 1d2h, 1d 3h 20m, etc.
-    """
-    text = (text or "").strip().lower()
-    if text in ("0", "perma", "perm", "permanente", "permanent"):
-        return 0  # 0 = permanente
-    m = DUR_RE.fullmatch(text.replace(",", " ").replace(":", " "))
-    if not m:
-        raise ValueError("Formato inválido. Use tipo: 2h, 1d3h, 30m, perma")
-    d, h, mi, s = (int(x) if x else 0 for x in m.groups())
-    total = d * 86400 + h * 3600 + mi * 60 + s
-    if total <= 0:
-        raise ValueError("Duração precisa ser > 0 (ou 'perma').")
-    return total
+def now_utc() -> datetime:
+    return datetime.now(tz=UTC)
 
 
 def dt_to_str(dt: datetime | None) -> str:
@@ -41,8 +32,39 @@ def dt_to_str(dt: datetime | None) -> str:
     return discord.utils.format_dt(dt, style="F")
 
 
-def now_utc() -> datetime:
-    return datetime.now(tz=UTC)
+def clean_staff_prefix(nick: str) -> str:
+    nick = (nick or "").strip()
+    if not nick:
+        return nick
+    return NICK_PREFIX_RE.sub("", nick, count=1).strip()
+
+
+def has_role(member: discord.Member, role_id: int) -> bool:
+    return any(r.id == role_id for r in member.roles)
+
+
+def can_manage(member: discord.Member) -> bool:
+    if member.guild_permissions.administrator:
+        return True
+    if getattr(IDS, "PUNISH_MANAGER_ROLE_ID", 0) and has_role(member, IDS.PUNISH_MANAGER_ROLE_ID):
+        return True
+    return False
+
+
+def staff_roles_to_remove(guild: discord.Guild) -> list[discord.Role]:
+    ids_list = getattr(IDS, "STAFF_ROLES_TO_REMOVE", []) or []
+    roles = []
+    for rid in ids_list:
+        role = guild.get_role(int(rid))
+        if role:
+            roles.append(role)
+
+    # fallback: se não configurar lista, remove pelo menos STAFF_ROLE_ID
+    if not roles and getattr(IDS, "STAFF_ROLE_ID", 0):
+        r = guild.get_role(int(IDS.STAFF_ROLE_ID))
+        if r:
+            roles = [r]
+    return roles
 
 
 # -------------------------
@@ -73,6 +95,7 @@ class PunishDB:
                     staff_id INTEGER NOT NULL,
                     staff_tag TEXT,
                     reason TEXT NOT NULL,
+                    proof TEXT,
                     created_at INTEGER NOT NULL,
                     duration_sec INTEGER NOT NULL,   -- 0 = permanente
                     ends_at INTEGER,                 -- null se perma
@@ -85,25 +108,6 @@ class PunishDB:
             """)
 
             cur.execute("""
-                CREATE TABLE IF NOT EXISTS appeals (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    guild_id INTEGER NOT NULL,
-                    punishment_id INTEGER NOT NULL,
-                    user_id INTEGER NOT NULL,
-                    created_at INTEGER NOT NULL,
-                    content TEXT,
-                    attachments TEXT,
-                    status TEXT NOT NULL DEFAULT 'open', -- open/accepted/denied
-                    decided_at INTEGER,
-                    decided_by INTEGER,
-                    decided_by_tag TEXT,
-                    decision_reason TEXT,
-                    FOREIGN KEY(punishment_id) REFERENCES punishments(id)
-                )
-            """)
-
-            # settings: guarda IDs das mensagens fixas (registro, recurso, tabela)
-            cur.execute("""
                 CREATE TABLE IF NOT EXISTS settings (
                     guild_id INTEGER PRIMARY KEY,
                     panel_message_id INTEGER,
@@ -112,7 +116,11 @@ class PunishDB:
                 )
             """)
 
-            # migração (se sua DB antiga não tiver appeal_message_id)
+            # migração (caso DB antiga)
+            try:
+                cur.execute("ALTER TABLE punishments ADD COLUMN proof TEXT")
+            except Exception:
+                pass
             try:
                 cur.execute("ALTER TABLE settings ADD COLUMN appeal_message_id INTEGER")
             except Exception:
@@ -124,19 +132,18 @@ class PunishDB:
         await asyncio.to_thread(_init)
         self._init_done = True
 
-    async def create_punishment(self, guild_id: int, user: discord.Member, staff: discord.Member, reason: str, duration_sec: int) -> int:
+    async def create_adv(self, guild_id: int, user: discord.Member, staff: discord.Member, reason: str, proof: str) -> int:
         created = int(now_utc().timestamp())
-        ends_at = None
-        if duration_sec > 0:
-            ends_at = int((now_utc() + timedelta(seconds=duration_sec)).timestamp())
+        duration_sec = ADV_DURATION_SEC
+        ends_at = int((now_utc() + timedelta(seconds=duration_sec)).timestamp())
 
         def _do():
             con = sqlite3.connect(self.path)
             cur = con.cursor()
             cur.execute("""
                 INSERT INTO punishments
-                (guild_id, user_id, user_tag, staff_id, staff_tag, reason, created_at, duration_sec, ends_at, active)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                (guild_id, user_id, user_tag, staff_id, staff_tag, reason, proof, created_at, duration_sec, ends_at, active)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
             """, (
                 guild_id,
                 user.id,
@@ -144,6 +151,7 @@ class PunishDB:
                 staff.id,
                 str(staff),
                 reason,
+                proof,
                 created,
                 duration_sec,
                 ends_at
@@ -155,7 +163,7 @@ class PunishDB:
 
         return await asyncio.to_thread(_do)
 
-    async def remove_punishment(self, guild_id: int, user_id: int, removed_by: discord.Member, removed_reason: str) -> int | None:
+    async def remove_latest_active(self, guild_id: int, user_id: int, removed_by: discord.Member, removed_reason: str) -> int | None:
         ts = int(now_utc().timestamp())
 
         def _do():
@@ -183,19 +191,17 @@ class PunishDB:
 
         return await asyncio.to_thread(_do)
 
-    async def get_active_punishment(self, guild_id: int, user_id: int):
+    async def count_active_user(self, guild_id: int, user_id: int) -> int:
         def _do():
             con = sqlite3.connect(self.path)
             cur = con.cursor()
             cur.execute("""
-                SELECT id, user_id, user_tag, staff_id, staff_tag, reason, created_at, duration_sec, ends_at
-                FROM punishments
+                SELECT COUNT(*) FROM punishments
                 WHERE guild_id=? AND user_id=? AND active=1
-                ORDER BY created_at DESC LIMIT 1
             """, (guild_id, user_id))
-            row = cur.fetchone()
+            n = int(cur.fetchone()[0])
             con.close()
-            return row
+            return n
         return await asyncio.to_thread(_do)
 
     async def list_active(self, guild_id: int):
@@ -203,7 +209,7 @@ class PunishDB:
             con = sqlite3.connect(self.path)
             cur = con.cursor()
             cur.execute("""
-                SELECT id, user_id, user_tag, staff_id, staff_tag, reason, created_at, duration_sec, ends_at
+                SELECT id, user_id, user_tag, staff_id, staff_tag, reason, proof, created_at, duration_sec, ends_at
                 FROM punishments
                 WHERE guild_id=? AND active=1
                 ORDER BY created_at DESC
@@ -213,45 +219,14 @@ class PunishDB:
             return rows
         return await asyncio.to_thread(_do)
 
-    async def expire_due(self, guild_id: int) -> list[int]:
-        ts = int(now_utc().timestamp())
-
+    async def get_settings(self, guild_id: int):
         def _do():
             con = sqlite3.connect(self.path)
             cur = con.cursor()
-            cur.execute("""
-                SELECT id FROM punishments
-                WHERE guild_id=? AND active=1 AND duration_sec>0 AND ends_at IS NOT NULL AND ends_at <= ?
-            """, (guild_id, ts))
-            rows = [r[0] for r in cur.fetchall()]
-            if rows:
-                cur.execute(f"""
-                    UPDATE punishments
-                    SET active=0, removed_at=?, removed_by=?, removed_by_tag=?, removed_reason=?
-                    WHERE guild_id=? AND id IN ({",".join("?" for _ in rows)})
-                """, (ts, 0, "Sistema", "Expirou automaticamente", guild_id, *rows))
-            con.commit()
+            cur.execute("SELECT panel_message_id, appeal_message_id, status_message_id FROM settings WHERE guild_id=?", (guild_id,))
+            row = cur.fetchone()
             con.close()
-            return rows
-
-        return await asyncio.to_thread(_do)
-
-    async def create_appeal(self, guild_id: int, punishment_id: int, user_id: int, content: str, attachments: list[str]) -> int:
-        ts = int(now_utc().timestamp())
-        att = "\n".join(attachments) if attachments else ""
-
-        def _do():
-            con = sqlite3.connect(self.path)
-            cur = con.cursor()
-            cur.execute("""
-                INSERT INTO appeals (guild_id, punishment_id, user_id, created_at, content, attachments, status)
-                VALUES (?, ?, ?, ?, ?, ?, 'open')
-            """, (guild_id, punishment_id, user_id, ts, content, att))
-            aid = cur.lastrowid
-            con.commit()
-            con.close()
-            return aid
-
+            return row
         return await asyncio.to_thread(_do)
 
     async def upsert_settings(self, guild_id: int, panel_message_id=None, appeal_message_id=None, status_message_id=None):
@@ -276,14 +251,41 @@ class PunishDB:
 
             con.commit()
             con.close()
-
         await asyncio.to_thread(_do)
 
-    async def get_settings(self, guild_id: int):
+    async def expire_due(self, guild_id: int) -> list[int]:
+        ts = int(now_utc().timestamp())
+
         def _do():
             con = sqlite3.connect(self.path)
             cur = con.cursor()
-            cur.execute("SELECT panel_message_id, appeal_message_id, status_message_id FROM settings WHERE guild_id=?", (guild_id,))
+            cur.execute("""
+                SELECT id FROM punishments
+                WHERE guild_id=? AND active=1 AND ends_at IS NOT NULL AND ends_at <= ?
+            """, (guild_id, ts))
+            rows = [r[0] for r in cur.fetchall()]
+            if rows:
+                cur.execute(f"""
+                    UPDATE punishments
+                    SET active=0, removed_at=?, removed_by=?, removed_by_tag=?, removed_reason=?
+                    WHERE guild_id=? AND id IN ({",".join("?" for _ in rows)})
+                """, (ts, 0, "Sistema", "ADV expirou automaticamente (30 dias)", guild_id, *rows))
+            con.commit()
+            con.close()
+            return rows
+
+        return await asyncio.to_thread(_do)
+
+    async def read_punishment(self, guild_id: int, pid: int):
+        def _do():
+            con = sqlite3.connect(self.path)
+            cur = con.cursor()
+            cur.execute("""
+                SELECT id, user_id, user_tag, staff_id, staff_tag, reason, proof, created_at, duration_sec, ends_at,
+                       removed_at, removed_by, removed_by_tag, removed_reason, active
+                FROM punishments
+                WHERE guild_id=? AND id=?
+            """, (guild_id, pid))
             row = cur.fetchone()
             con.close()
             return row
@@ -291,27 +293,17 @@ class PunishDB:
 
 
 # -------------------------
-# Permissões
-# -------------------------
-def has_role(member: discord.Member, role_id: int) -> bool:
-    return any(r.id == role_id for r in member.roles)
-
-
-def can_manage(member: discord.Member) -> bool:
-    if member.guild_permissions.administrator:
-        return True
-    if IDS.PUNISH_MANAGER_ROLE_ID and has_role(member, IDS.PUNISH_MANAGER_ROLE_ID):
-        return True
-    return False
-
-
-# -------------------------
 # UI: Modals
 # -------------------------
-class ApplyPunishmentModal(discord.ui.Modal, title="Aplicar punição"):
+class ApplyAdvModal(discord.ui.Modal, title="Registrar ADV (30 dias)"):
     user_id = discord.ui.TextInput(label="ID do staff punido", placeholder="Ex: 123456789012345678", required=True)
-    duration = discord.ui.TextInput(label="Duração (ex: 2h, 1d3h, 30m ou perma)", placeholder="2h", required=True)
-    reason = discord.ui.TextInput(label="Motivo", style=discord.TextStyle.paragraph, required=True, max_length=800)
+    reason = discord.ui.TextInput(label="Motivo (obrigatório)", style=discord.TextStyle.paragraph, required=True, max_length=800)
+    proof = discord.ui.TextInput(
+        label="Provas (links / descrição curta)",
+        style=discord.TextStyle.paragraph,
+        required=True,
+        max_length=1000
+    )
 
     def __init__(self, cog: "PunicoesCog"):
         super().__init__()
@@ -322,7 +314,7 @@ class ApplyPunishmentModal(discord.ui.Modal, title="Aplicar punição"):
             return await interaction.response.send_message("Só funciona no servidor.", ephemeral=True)
 
         if not can_manage(interaction.user):
-            return await interaction.response.send_message("Você não tem permissão pra aplicar punição.", ephemeral=True)
+            return await interaction.response.send_message("Você não tem permissão pra registrar ADV.", ephemeral=True)
 
         try:
             uid = int(str(self.user_id.value).strip())
@@ -333,27 +325,36 @@ class ApplyPunishmentModal(discord.ui.Modal, title="Aplicar punição"):
         if not member:
             return await interaction.response.send_message("Não achei esse membro no servidor.", ephemeral=True)
 
-        if IDS.STAFF_ROLE_ID and not has_role(member, IDS.STAFF_ROLE_ID):
-            return await interaction.response.send_message("Esse usuário não parece ser STAFF (cargo não encontrado).", ephemeral=True)
+        # conta quantos ADV ativos ele já tem
+        current = await self.cog.db.count_active_user(interaction.guild.id, member.id)
+        if current >= 3:
+            return await interaction.response.send_message("Esse staff já está com 3 ADV ativos.", ephemeral=True)
 
-        if can_manage(member) and not interaction.user.guild_permissions.administrator:
-            return await interaction.response.send_message("Não vou punir gerência/admin por aqui.", ephemeral=True)
+        pid = await self.cog.db.create_adv(
+            interaction.guild.id,
+            user=member,
+            staff=interaction.user,
+            reason=str(self.reason.value).strip(),
+            proof=str(self.proof.value).strip()
+        )
 
-        try:
-            dur = parse_duration(self.duration.value)
-        except Exception as e:
-            return await interaction.response.send_message(f"Erro na duração: {e}", ephemeral=True)
+        new_count = current + 1
 
-        reason = str(self.reason.value).strip()
-        pid = await self.cog.db.create_punishment(interaction.guild.id, member, interaction.user, reason, dur)
+        await interaction.response.send_message(
+            f"✅ ADV registrado (#{pid}). Agora: **{new_count}/3**. Duração: **{ADV_DURATION_DAYS} dias**.",
+            ephemeral=True
+        )
 
-        await interaction.response.send_message(f"✅ Punição aplicada com sucesso. ID #{pid}", ephemeral=True)
+        await self.cog.log_adv_applied(interaction.guild, pid, new_count)
 
-        await self.cog.log_punishment_applied(interaction.guild, pid)
+        # se bateu 3: punição automática (remove cargos + limpa nick)
+        if new_count >= 3:
+            await self.cog.apply_three_adv_penalty(interaction.guild, member, interaction.user, pid)
+
         await self.cog.refresh_status_board(interaction.guild)
 
 
-class RemovePunishmentModal(discord.ui.Modal, title="Remover punição"):
+class RemoveAdvModal(discord.ui.Modal, title="Remover ADV (último ativo)"):
     user_id = discord.ui.TextInput(label="ID do staff punido", placeholder="123...", required=True)
     reason = discord.ui.TextInput(label="Motivo da retirada", style=discord.TextStyle.paragraph, required=True, max_length=800)
 
@@ -366,93 +367,30 @@ class RemovePunishmentModal(discord.ui.Modal, title="Remover punição"):
             return await interaction.response.send_message("Só funciona no servidor.", ephemeral=True)
 
         if not can_manage(interaction.user):
-            return await interaction.response.send_message("Você não tem permissão pra remover punição.", ephemeral=True)
+            return await interaction.response.send_message("Você não tem permissão pra remover ADV.", ephemeral=True)
 
         try:
             uid = int(str(self.user_id.value).strip())
         except ValueError:
             return await interaction.response.send_message("ID inválido.", ephemeral=True)
 
-        pid = await self.cog.db.remove_punishment(interaction.guild.id, uid, interaction.user, str(self.reason.value).strip())
+        pid = await self.cog.db.remove_latest_active(
+            interaction.guild.id,
+            uid,
+            interaction.user,
+            str(self.reason.value).strip()
+        )
         if not pid:
-            return await interaction.response.send_message("Esse staff não tem punição ativa.", ephemeral=True)
+            return await interaction.response.send_message("Esse staff não tem ADV ativo.", ephemeral=True)
 
-        await interaction.response.send_message(f"✅ Punição removida. (Punição #{pid})", ephemeral=True)
-        await self.cog.log_punishment_removed(interaction.guild, pid)
+        left = await self.cog.db.count_active_user(interaction.guild.id, uid)
+
+        await interaction.response.send_message(f"✅ ADV removido. (Registro #{pid}) — Agora: **{left}/3**", ephemeral=True)
+        await self.cog.log_adv_removed(interaction.guild, pid)
         await self.cog.refresh_status_board(interaction.guild)
 
 
-class ConsultPunishmentModal(discord.ui.Modal, title="Consultar punição"):
-    user_id = discord.ui.TextInput(label="ID do staff", placeholder="123...", required=True)
-
-    def __init__(self, cog: "PunicoesCog"):
-        super().__init__()
-        self.cog = cog
-
-    async def on_submit(self, interaction: discord.Interaction):
-        if not interaction.guild:
-            return await interaction.response.send_message("Só funciona no servidor.", ephemeral=True)
-
-        try:
-            uid = int(str(self.user_id.value).strip())
-        except ValueError:
-            return await interaction.response.send_message("ID inválido.", ephemeral=True)
-
-        row = await self.cog.db.get_active_punishment(interaction.guild.id, uid)
-        if not row:
-            return await interaction.response.send_message("Sem punição ativa.", ephemeral=True)
-
-        (pid, user_id, user_tag, staff_id, staff_tag, reason, created_at, duration_sec, ends_at) = row
-        created_dt = datetime.fromtimestamp(created_at, tz=UTC)
-        ends_dt = datetime.fromtimestamp(ends_at, tz=UTC) if ends_at else None
-
-        embed = discord.Embed(title=f"Punição ativa #{pid}", color=discord.Color.orange())
-        embed.add_field(name="Punido", value=f"<@{user_id}> (`{user_tag}`)\nID: `{user_id}`", inline=False)
-        embed.add_field(name="Aplicada por", value=f"<@{staff_id}> (`{staff_tag}`)\nID: `{staff_id}`", inline=False)
-        embed.add_field(name="Motivo", value=reason, inline=False)
-        embed.add_field(name="Início", value=dt_to_str(created_dt), inline=True)
-        if duration_sec == 0:
-            embed.add_field(name="Duração", value="Permanente", inline=True)
-            embed.add_field(name="Término", value="—", inline=True)
-        else:
-            embed.add_field(name="Duração", value=f"{duration_sec//60} min (~)", inline=True)
-            embed.add_field(name="Término", value=dt_to_str(ends_dt), inline=True)
-
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-
-# -------------------------
-# UI: Painéis (Views)
-# -------------------------
-class PunishPanelView(discord.ui.View):
-    def __init__(self, cog: "PunicoesCog"):
-        super().__init__(timeout=None)
-        self.cog = cog
-
-    @discord.ui.button(label="Aplicar punição", style=discord.ButtonStyle.danger, custom_id="punish:apply")
-    async def apply_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not interaction.guild or not isinstance(interaction.user, discord.Member):
-            return await interaction.response.send_message("Só funciona no servidor.", ephemeral=True)
-        if not can_manage(interaction.user):
-            return await interaction.response.send_message("Sem permissão.", ephemeral=True)
-        await interaction.response.send_modal(ApplyPunishmentModal(self.cog))
-
-    @discord.ui.button(label="Remover punição", style=discord.ButtonStyle.success, custom_id="punish:remove")
-    async def remove_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not interaction.guild or not isinstance(interaction.user, discord.Member):
-            return await interaction.response.send_message("Só funciona no servidor.", ephemeral=True)
-        if not can_manage(interaction.user):
-            return await interaction.response.send_message("Sem permissão.", ephemeral=True)
-        await interaction.response.send_modal(RemovePunishmentModal(self.cog))
-
-    @discord.ui.button(label="Consultar", style=discord.ButtonStyle.secondary, custom_id="punish:consult")
-    async def consult_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not interaction.guild:
-            return await interaction.response.send_message("Só funciona no servidor.", ephemeral=True)
-        await interaction.response.send_modal(ConsultPunishmentModal(self.cog))
-
-
-class AppealModal(discord.ui.Modal, title="Recorrer punição"):
+class AppealModal(discord.ui.Modal, title="Recorrer punição (ADV)"):
     proof = discord.ui.TextInput(
         label="Explique e cole links (vídeos/prints) aqui",
         style=discord.TextStyle.paragraph,
@@ -468,21 +406,39 @@ class AppealModal(discord.ui.Modal, title="Recorrer punição"):
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             return await interaction.response.send_message("Só funciona no servidor.", ephemeral=True)
 
-        row = await self.cog.db.get_active_punishment(interaction.guild.id, interaction.user.id)
-        if not row:
-            return await interaction.response.send_message("Você não tem punição ativa para recorrer.", ephemeral=True)
+        # precisa ter ao menos 1 ADV ativo
+        count = await self.cog.db.count_active_user(interaction.guild.id, interaction.user.id)
+        if count <= 0:
+            return await interaction.response.send_message("Você não tem ADV ativo para recorrer.", ephemeral=True)
 
-        pid = row[0]
-        aid = await self.cog.db.create_appeal(
-            interaction.guild.id,
-            punishment_id=pid,
-            user_id=interaction.user.id,
-            content=str(self.proof.value).strip(),
-            attachments=[],
-        )
+        # manda para o canal de recurso + logs
+        await interaction.response.send_message("✅ Recurso enviado para análise.", ephemeral=True)
+        await self.cog.post_appeal_summary(interaction.guild, interaction.user, str(self.proof.value).strip())
 
-        await interaction.response.send_message(f"✅ Recurso aberto! (Recurso #{aid} / Punição #{pid})", ephemeral=True)
-        await self.cog.post_appeal_summary(interaction.guild, interaction.user, pid, aid, str(self.proof.value).strip())
+
+# -------------------------
+# UI: Views (Painéis)
+# -------------------------
+class PunishPanelView(discord.ui.View):
+    def __init__(self, cog: "PunicoesCog"):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(label="Registrar ADV (30d)", style=discord.ButtonStyle.danger, custom_id="punish:apply_adv")
+    async def apply_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            return await interaction.response.send_message("Só funciona no servidor.", ephemeral=True)
+        if not can_manage(interaction.user):
+            return await interaction.response.send_message("Sem permissão.", ephemeral=True)
+        await interaction.response.send_modal(ApplyAdvModal(self.cog))
+
+    @discord.ui.button(label="Remover ADV", style=discord.ButtonStyle.success, custom_id="punish:remove_adv")
+    async def remove_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            return await interaction.response.send_message("Só funciona no servidor.", ephemeral=True)
+        if not can_manage(interaction.user):
+            return await interaction.response.send_message("Sem permissão.", ephemeral=True)
+        await interaction.response.send_modal(RemoveAdvModal(self.cog))
 
 
 class AppealView(discord.ui.View):
@@ -512,7 +468,6 @@ class PunicoesCog(commands.Cog):
 
     async def cog_load(self):
         await self.db.init()
-        # cria automaticamente os 3 painéis assim que o bot estiver pronto
         self.bot.loop.create_task(self._auto_setup_all_guilds())
 
     def cog_unload(self):
@@ -534,9 +489,9 @@ class PunicoesCog(commands.Cog):
     async def ensure_panels(self, guild: discord.Guild):
         """
         Garante automaticamente:
-        1) Painel Registro (botões aplicar/remover/consultar)
-        2) Painel Recorrer (botão abrir recurso)
-        3) Mensagem da Tabela (status)
+        1) Painel Registro
+        2) Painel Recorrer
+        3) Tabela de punidos
         Sem comando. Sem spam: edita se existir, cria se não existir.
         """
         await self.db.init()
@@ -546,24 +501,26 @@ class PunicoesCog(commands.Cog):
         status_ch = self.ch(guild, IDS.PUNISH_STATUS_CHANNEL_ID)
 
         if not reg_ch or not appeal_ch or not status_ch:
-            print(f"⚠️ [Punicoes] Canais inválidos no guild {guild.id}. Verifique config/ids.py (IDs dos 3 canais).")
+            print(f"⚠️ [Punicoes] IDs de canal inválidos no guild {guild.id}. Verifique config/ids.py")
             return
 
         settings = await self.db.get_settings(guild.id)
         panel_msg_id = settings[0] if settings else None
         appeal_msg_id = settings[1] if settings else None
-        # status_msg_id = settings[2]  (o refresh_status_board lida com isso)
 
-        # ---- Painel Registro ----
+        # ---- Painel Registro (VISUAL IGUAL SEU MODELO) ----
         panel_embed = discord.Embed(
-            title="🛡️ Registro de Punições (STAFF)",
+            title="🛡️ REGISTRO DE PUNIÇÕES",
             description=(
-                "Use os botões abaixo para **aplicar**, **remover** ou **consultar** punições.\n\n"
-                "⚠️ Somente gerência/direção pode aplicar/remover."
+                "Use o painel abaixo para **registrar** ou **retirar** ADV de staff.\n\n"
+                f"📌 Cada ADV dura **{ADV_DURATION_DAYS} dias** e sai automaticamente.\n"
+                "⚠️ Ao chegar em **3 ADV**, o staff perde os cargos de staff automaticamente."
             ),
-            color=discord.Color.dark_gold()
+            color=discord.Color.dark_magenta()
         )
-        panel_embed.set_footer(text="Bronks Games • Painel oficial")
+        panel_embed.set_thumbnail(url=THUMB_URL)
+        panel_embed.set_image(url=IMAGE_URL)
+        panel_embed.set_footer(text="Akira Roleplay © All rights reserved")
 
         panel_msg = None
         if panel_msg_id:
@@ -577,16 +534,18 @@ class PunicoesCog(commands.Cog):
             panel_msg = await reg_ch.send(embed=panel_embed, view=PunishPanelView(self))
             await self.db.upsert_settings(guild.id, panel_message_id=panel_msg.id)
 
-        # ---- Painel Recorrer ----
+        # ---- Painel Recorrer (VISUAL) ----
         appeal_embed = discord.Embed(
-            title="📨 Recorrer punição",
+            title="📨 RECORRER À PUNIÇÃO",
             description=(
-                "Se você foi punido e quer recorrer, clique no botão abaixo e explique.\n"
-                "Cole links (clips/prints) no texto do recurso."
+                "Se você recebeu ADV e quer recorrer, clique no botão abaixo.\n"
+                "Envie provas (links/prints) e explique direitinho."
             ),
-            color=discord.Color.blurple()
+            color=discord.Color.dark_magenta()
         )
-        appeal_embed.set_footer(text="Bronks Games • Recurso de punição")
+        appeal_embed.set_thumbnail(url=THUMB_URL)
+        appeal_embed.set_image(url=IMAGE_URL)
+        appeal_embed.set_footer(text="Akira Roleplay © All rights reserved")
 
         appeal_msg = None
         if appeal_msg_id:
@@ -605,88 +564,113 @@ class PunicoesCog(commands.Cog):
 
         print(f"✅ [Punicoes] Painéis garantidos no guild {guild.id}")
 
+    # ----------- Logs -----------
     async def log_embed(self, guild: discord.Guild, embed: discord.Embed):
         log_ch = self.ch(guild, IDS.PUNISH_LOG_CHANNEL_ID)
         if log_ch:
             await log_ch.send(embed=embed)
 
-    # ----------- Logs detalhados -----------
-    async def log_punishment_applied(self, guild: discord.Guild, pid: int):
-        rows = await self.db.list_active(guild.id)
-        row = next((r for r in rows if r[0] == pid), None)
+    async def log_adv_applied(self, guild: discord.Guild, pid: int, adv_count_after: int):
+        row = await self.db.read_punishment(guild.id, pid)
         if not row:
             return
 
-        (pid, user_id, user_tag, staff_id, staff_tag, reason, created_at, duration_sec, ends_at) = row
+        (pid, user_id, user_tag, staff_id, staff_tag, reason, proof, created_at, duration_sec, ends_at,
+         removed_at, removed_by, removed_by_tag, removed_reason, active) = row
+
         created_dt = datetime.fromtimestamp(created_at, tz=UTC)
         ends_dt = datetime.fromtimestamp(ends_at, tz=UTC) if ends_at else None
 
-        embed = discord.Embed(title=f"✅ Punição aplicada #{pid}", color=discord.Color.red())
+        embed = discord.Embed(title=f"✅ ADV registrado #{pid}", color=discord.Color.red())
         embed.add_field(name="Punido", value=f"<@{user_id}> (`{user_tag}`)\nID: `{user_id}`", inline=False)
-        embed.add_field(name="Aplicada por", value=f"<@{staff_id}> (`{staff_tag}`)\nID: `{staff_id}`", inline=False)
-        embed.add_field(name="Motivo", value=reason, inline=False)
+        embed.add_field(name="Responsável", value=f"<@{staff_id}> (`{staff_tag}`)\nID: `{staff_id}`", inline=False)
+        embed.add_field(name="ADV (após registro)", value=f"**{adv_count_after}/3**", inline=True)
         embed.add_field(name="Início", value=dt_to_str(created_dt), inline=True)
-        if duration_sec == 0:
-            embed.add_field(name="Duração", value="Permanente", inline=True)
-            embed.add_field(name="Término", value="—", inline=True)
-        else:
-            embed.add_field(name="Duração", value=f"{duration_sec//60} min (~)", inline=True)
-            embed.add_field(name="Término", value=dt_to_str(ends_dt), inline=True)
+        embed.add_field(name="Término", value=dt_to_str(ends_dt), inline=True)
+        embed.add_field(name="Motivo", value=reason, inline=False)
+        embed.add_field(name="Provas", value=proof or "—", inline=False)
 
         await self.log_embed(guild, embed)
 
-    async def log_punishment_removed(self, guild: discord.Guild, pid: int):
-        def _do():
-            con = sqlite3.connect(self.db.path)
-            cur = con.cursor()
-            cur.execute("""
-                SELECT id, user_id, user_tag, staff_id, staff_tag, reason, created_at, duration_sec, ends_at,
-                       removed_at, removed_by, removed_by_tag, removed_reason
-                FROM punishments
-                WHERE guild_id=? AND id=?
-            """, (guild.id, pid))
-            row = cur.fetchone()
-            con.close()
-            return row
-
-        row = await asyncio.to_thread(_do)
+    async def log_adv_removed(self, guild: discord.Guild, pid: int):
+        row = await self.db.read_punishment(guild.id, pid)
         if not row:
             return
 
-        (pid, user_id, user_tag, staff_id, staff_tag, reason, created_at, duration_sec, ends_at,
-         removed_at, removed_by, removed_by_tag, removed_reason) = row
+        (pid, user_id, user_tag, staff_id, staff_tag, reason, proof, created_at, duration_sec, ends_at,
+         removed_at, removed_by, removed_by_tag, removed_reason, active) = row
 
         created_dt = datetime.fromtimestamp(created_at, tz=UTC)
         ends_dt = datetime.fromtimestamp(ends_at, tz=UTC) if ends_at else None
         removed_dt = datetime.fromtimestamp(removed_at, tz=UTC) if removed_at else None
 
-        embed = discord.Embed(title=f"✅ Punição removida #{pid}", color=discord.Color.green())
+        embed = discord.Embed(title=f"✅ ADV removido #{pid}", color=discord.Color.green())
         embed.add_field(name="Punido", value=f"<@{user_id}> (`{user_tag}`)\nID: `{user_id}`", inline=False)
-        embed.add_field(name="Aplicada por", value=f"<@{staff_id}> (`{staff_tag}`)\nID: `{staff_id}`", inline=False)
+        embed.add_field(name="Registrado por", value=f"<@{staff_id}> (`{staff_tag}`)\nID: `{staff_id}`", inline=False)
         embed.add_field(name="Motivo original", value=reason, inline=False)
+        embed.add_field(name="Provas originais", value=proof or "—", inline=False)
 
         embed.add_field(name="Início", value=dt_to_str(created_dt), inline=True)
-        if duration_sec == 0:
-            embed.add_field(name="Duração", value="Permanente", inline=True)
-            embed.add_field(name="Término previsto", value="—", inline=True)
-        else:
-            embed.add_field(name="Duração", value=f"{duration_sec//60} min (~)", inline=True)
-            embed.add_field(name="Término previsto", value=dt_to_str(ends_dt), inline=True)
+        embed.add_field(name="Término previsto", value=dt_to_str(ends_dt), inline=True)
 
-        embed.add_field(name="Removida em", value=dt_to_str(removed_dt), inline=True)
-        embed.add_field(name="Removida por", value=f"<@{removed_by}> (`{removed_by_tag}`)\nID: `{removed_by}`", inline=True)
+        embed.add_field(name="Removido em", value=dt_to_str(removed_dt), inline=True)
+        embed.add_field(name="Removido por", value=f"<@{removed_by}> (`{removed_by_tag}`)\nID: `{removed_by}`", inline=False)
         embed.add_field(name="Motivo da retirada", value=removed_reason or "—", inline=False)
 
         await self.log_embed(guild, embed)
 
+    async def apply_three_adv_penalty(self, guild: discord.Guild, member: discord.Member, by: discord.Member, last_pid: int):
+        """
+        Ao chegar em 3 ADV:
+        - remove cargos de staff configurados
+        - limpa prefixo do nick tipo [ADM]
+        """
+        roles = staff_roles_to_remove(guild)
+
+        # remove roles
+        removed_roles = []
+        try:
+            if roles:
+                await member.remove_roles(*roles, reason="3 ADV ativos (punição automática)")
+                removed_roles = [r.name for r in roles]
+        except discord.Forbidden:
+            removed_roles = ["(SEM PERMISSÃO PARA REMOVER CARGOS)"]
+        except Exception:
+            removed_roles = ["(ERRO AO REMOVER CARGOS)"]
+
+        # limpa nick
+        old_nick = member.nick or member.name
+        new_nick = clean_staff_prefix(old_nick)
+
+        nick_result = "não alterado"
+        try:
+            if new_nick and new_nick != old_nick:
+                await member.edit(nick=new_nick, reason="3 ADV ativos (limpeza de tag staff)")
+                nick_result = f"`{old_nick}` → `{new_nick}`"
+            else:
+                nick_result = f"`{old_nick}`"
+        except discord.Forbidden:
+            nick_result = "(SEM PERMISSÃO PARA MUDAR NICK)"
+        except Exception:
+            nick_result = "(ERRO AO MUDAR NICK)"
+
+        embed = discord.Embed(title="🚫 3 ADV atingidos — ação automática", color=discord.Color.dark_red())
+        embed.add_field(name="Staff", value=f"{member.mention} (`{member}`)\nID: `{member.id}`", inline=False)
+        embed.add_field(name="Responsável (último registro)", value=f"{by.mention} (`{by}`)\nID: `{by.id}`", inline=False)
+        embed.add_field(name="Registro que bateu 3", value=f"#{last_pid}", inline=True)
+        embed.add_field(name="Cargos removidos", value="\n".join(removed_roles) if removed_roles else "—", inline=False)
+        embed.add_field(name="Nick", value=nick_result, inline=False)
+        embed.set_footer(text="Sistema automático • 3 ADV")
+
+        await self.log_embed(guild, embed)
+
     # ----------- Canal de recurso -----------
-    async def post_appeal_summary(self, guild: discord.Guild, user: discord.Member, pid: int, aid: int, content: str):
+    async def post_appeal_summary(self, guild: discord.Guild, user: discord.Member, content: str):
         appeal_ch = self.ch(guild, IDS.PUNISH_APPEAL_CHANNEL_ID)
-        embed = discord.Embed(title=f"📨 Recurso aberto #{aid}", color=discord.Color.blurple())
-        embed.add_field(name="Punido", value=f"{user.mention} (`{user}`)\nID: `{user.id}`", inline=False)
-        embed.add_field(name="Punição", value=f"#{pid}", inline=True)
+        embed = discord.Embed(title="📨 Recurso enviado", color=discord.Color.blurple())
+        embed.add_field(name="Staff", value=f"{user.mention} (`{user}`)\nID: `{user.id}`", inline=False)
         embed.add_field(name="Texto/Provas", value=content[:1000], inline=False)
-        embed.set_footer(text="Gerência pode analisar pelo canal e remover a punição no painel, se necessário.")
+        embed.set_footer(text="Gerência deve avaliar no canal de recurso.")
 
         if appeal_ch:
             await appeal_ch.send(embed=embed)
@@ -698,36 +682,46 @@ class PunicoesCog(commands.Cog):
         rows = await self.db.list_active(guild.id)
 
         embed = discord.Embed(
-            title="📋 Tabela de punições ativas (STAFF)",
-            color=discord.Color.orange(),
-            description="Atualiza automaticamente quando alguém é punido/removido ou quando expira."
+            title="📋 TABELA DE PUNIDOS (ADV ATIVOS)",
+            description="Atualiza automaticamente quando registra/remove ou quando ADV expira (30 dias).",
+            color=discord.Color.dark_magenta()
         )
-        embed.set_footer(text="Bronks Games • Sistema de Punições")
+        embed.set_thumbnail(url=THUMB_URL)
+        embed.set_image(url=IMAGE_URL)
+        embed.set_footer(text="Akira Roleplay © All rights reserved")
 
         if not rows:
-            embed.description = "✅ Nenhuma punição ativa no momento."
+            embed.description = "✅ Nenhum staff com ADV ativo no momento."
             return embed
 
-        lines = []
-        for (pid, user_id, user_tag, staff_id, staff_tag, reason, created_at, duration_sec, ends_at) in rows[:20]:
-            created_dt = datetime.fromtimestamp(created_at, tz=UTC)
-            if duration_sec == 0:
-                ends_txt = "Permanente"
-            else:
-                ends_dt = datetime.fromtimestamp(ends_at, tz=UTC) if ends_at else None
-                ends_txt = discord.utils.format_dt(ends_dt, style="R") if ends_dt else "—"
+        # conta por usuário: quantos ADV ativos ele tem
+        counts = {}
+        for r in rows:
+            user_id = r[1]
+            counts[user_id] = counts.get(user_id, 0) + 1
 
+        # monta linhas únicas por usuário (não lista 100 registros repetidos)
+        lines = []
+        seen = set()
+        for (pid, user_id, user_tag, staff_id, staff_tag, reason, proof, created_at, duration_sec, ends_at) in rows:
+            if user_id in seen:
+                continue
+            seen.add(user_id)
+
+            adv_count = counts.get(user_id, 1)
+            ends_dt = datetime.fromtimestamp(ends_at, tz=UTC) if ends_at else None
+            ends_txt = discord.utils.format_dt(ends_dt, style="R") if ends_dt else "—"
             reason_short = (reason[:60] + "…") if len(reason) > 60 else reason
+
             lines.append(
-                f"**#{pid}** • <@{user_id}> • por <@{staff_id}>\n"
-                f"⏱️ {dt_to_str(created_dt)} • termina: **{ends_txt}**\n"
+                f"**{adv_count}/3** • <@{user_id}>  (último: **#{pid}**)\n"
+                f"⏳ expira: **{ends_txt}**\n"
                 f"📝 {reason_short}"
             )
 
-        embed.add_field(name="Punidos", value="\n\n".join(lines), inline=False)
-
-        if len(rows) > 20:
-            embed.add_field(name="Observação", value=f"Mostrando 20 de {len(rows)} punições ativas.", inline=False)
+        embed.add_field(name="Status", value="\n\n".join(lines[:20]), inline=False)
+        if len(lines) > 20:
+            embed.add_field(name="Observação", value=f"Mostrando 20 de {len(lines)} staff com ADV ativo.", inline=False)
 
         return embed
 
@@ -759,8 +753,17 @@ class PunicoesCog(commands.Cog):
         for guild in self.bot.guilds:
             expired_ids = await self.db.expire_due(guild.id)
             if expired_ids:
+                # só atualiza tabela e loga expiração
                 for pid in expired_ids:
-                    await self.log_punishment_removed(guild, pid)
+                    row = await self.db.read_punishment(guild.id, pid)
+                    if row:
+                        embed = discord.Embed(title="⌛ ADV expirou automaticamente", color=discord.Color.gold())
+                        embed.add_field(name="Registro", value=f"#{pid}", inline=True)
+                        embed.add_field(name="Staff", value=f"<@{row[1]}> (`{row[2]}`)\nID: `{row[1]}`", inline=False)
+                        embed.add_field(name="Motivo original", value=row[5], inline=False)
+                        embed.set_footer(text=f"Expiração automática • {ADV_DURATION_DAYS} dias")
+                        await self.log_embed(guild, embed)
+
                 await self.refresh_status_board(guild)
 
     @expire_task.before_loop
