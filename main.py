@@ -3,6 +3,27 @@ import platform, struct, os
 print("SYSTEM:", platform.system(), flush=True)
 print("ARCH (host):", platform.machine(), flush=True)
 
+import logging
+
+logging.basicConfig(level=logging.INFO)
+
+@bot.event
+async def on_connect():
+    print("✅ Conectou ao Gateway (on_connect)")
+
+@bot.event
+async def on_disconnect():
+    print("⚠️ Desconectou do Gateway (on_disconnect)")
+
+@bot.event
+async def on_resumed():
+    print("🔁 Sessão retomada (on_resumed)")
+
+@bot.event
+async def on_ready():
+    print(f"🤖 Bot online como {bot.user} (ID: {bot.user.id})")
+
+
 # =====================
 # DIAGNÓSTICO CLOUDFLARED (opcional, mas ajuda)
 # =====================
