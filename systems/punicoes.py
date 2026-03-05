@@ -682,7 +682,7 @@ class PunicoesCog(commands.Cog):
         rows = await self.db.list_active(guild.id)
 
         embed = discord.Embed(
-            title="📋 TABELA DE PUNIDOS (ADV ATIVOS)",
+            title="📋 TABELA DE PUNIDOS (LEADERBOARD ADV)",
             description="Atualiza automaticamente quando registra/remove ou quando ADV expira (30 dias).",
             color=discord.Color.dark_magenta()
         )
@@ -694,34 +694,64 @@ class PunicoesCog(commands.Cog):
             embed.description = "✅ Nenhum staff com ADV ativo no momento."
             return embed
 
-        # conta por usuário: quantos ADV ativos ele tem
-        counts = {}
-        for r in rows:
-            user_id = r[1]
-            counts[user_id] = counts.get(user_id, 0) + 1
-
-        # monta linhas únicas por usuário (não lista 100 registros repetidos)
-        lines = []
-        seen = set()
+        # conta quantos ADV ativos por usuário + pega o vencimento mais próximo (pra mostrar o que expira primeiro)
+        per_user = {}
         for (pid, user_id, user_tag, staff_id, staff_tag, reason, proof, created_at, duration_sec, ends_at) in rows:
-            if user_id in seen:
-                continue
-            seen.add(user_id)
+            d = per_user.get(user_id)
+            if not d:
+                per_user[user_id] = {
+                    "count": 1,
+                    "last_pid": pid,
+                    "last_reason": reason,
+                    "expires_at": ends_at,  # vamos manter o menor ends_at (mais próximo)
+                }
+            else:
+                d["count"] += 1
+                # mantém um "último pid" mais recente (maior created_at geralmente já vem ordenado, mas garantimos)
+                d["last_pid"] = max(d["last_pid"], pid)
+                d["last_reason"] = reason  # ok, porque rows está em ordem desc
+                # menor ends_at = expira primeiro
+                if ends_at and d["expires_at"]:
+                    d["expires_at"] = min(d["expires_at"], ends_at)
+                elif ends_at and not d["expires_at"]:
+                    d["expires_at"] = ends_at
 
-            adv_count = counts.get(user_id, 1)
-            ends_dt = datetime.fromtimestamp(ends_at, tz=UTC) if ends_at else None
-            ends_txt = discord.utils.format_dt(ends_dt, style="R") if ends_dt else "—"
-            reason_short = (reason[:60] + "…") if len(reason) > 60 else reason
+        # ordena: maior ADV primeiro (3 -> 2 -> 1), depois expira mais cedo
+        leaderboard = sorted(
+            per_user.items(),
+            key=lambda item: (-item[1]["count"], item[1]["expires_at"] or 10**18)
+        )
+
+        def adv_bar(n: int) -> str:
+            n = max(0, min(3, int(n)))
+            filled = "█" * n
+            empty = "░" * (3 - n)
+            # deixa com espaços igual você pediu "█ █ █"
+            spaced = " ".join(list(filled + empty))
+            return spaced
+
+        lines = []
+        for idx, (user_id, info) in enumerate(leaderboard[:25], start=1):
+            n = info["count"]
+            expires_at = info["expires_at"]
+            expires_dt = datetime.fromtimestamp(expires_at, tz=UTC) if expires_at else None
+            exp_txt = discord.utils.format_dt(expires_dt, style="R") if expires_dt else "—"
+
+            reason_short = info["last_reason"] or ""
+            if len(reason_short) > 45:
+                reason_short = reason_short[:45] + "…"
 
             lines.append(
-                f"**{adv_count}/3** • <@{user_id}>  (último: **#{pid}**)\n"
-                f"⏳ expira: **{ends_txt}**\n"
+                f"**#{idx}** • <@{user_id}>\n"
+                f"**ADV:** `{n}/3`  {adv_bar(n)}\n"
+                f"⏳ **Expira:** {exp_txt}  •  🧾 **Último:** `#{info['last_pid']}`\n"
                 f"📝 {reason_short}"
             )
 
-        embed.add_field(name="Status", value="\n\n".join(lines[:20]), inline=False)
-        if len(lines) > 20:
-            embed.add_field(name="Observação", value=f"Mostrando 20 de {len(lines)} staff com ADV ativo.", inline=False)
+        embed.add_field(name="Leaderboard", value="\n\n".join(lines), inline=False)
+
+        if len(leaderboard) > 25:
+            embed.add_field(name="Observação", value=f"Mostrando 25 de {len(leaderboard)} staff com ADV ativo.", inline=False)
 
         return embed
 
