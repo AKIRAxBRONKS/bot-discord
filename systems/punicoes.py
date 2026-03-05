@@ -5,19 +5,17 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 import discord
-from discord import app_commands
 from discord.ext import commands, tasks
 
 from config import ids as IDS
 
-
 UTC = timezone.utc
-
 
 # -------------------------
 # Util: parse duração "1d2h30m"
 # -------------------------
 DUR_RE = re.compile(r"(?:(\d+)\s*d)?\s*(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?\s*(?:(\d+)\s*s)?", re.I)
+
 
 def parse_duration(text: str) -> int:
     """
@@ -59,13 +57,13 @@ class PunishDB:
         if self._init_done:
             return
 
-        # garante pasta data/
         import os
         os.makedirs("data", exist_ok=True)
 
         def _init():
             con = sqlite3.connect(self.path)
             cur = con.cursor()
+
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS punishments (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -85,6 +83,7 @@ class PunishDB:
                     removed_reason TEXT
                 )
             """)
+
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS appeals (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -102,27 +101,30 @@ class PunishDB:
                     FOREIGN KEY(punishment_id) REFERENCES punishments(id)
                 )
             """)
+
+            # settings: guarda IDs das mensagens fixas (registro, recurso, tabela)
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS settings (
                     guild_id INTEGER PRIMARY KEY,
                     panel_message_id INTEGER,
+                    appeal_message_id INTEGER,
                     status_message_id INTEGER
                 )
             """)
+
+            # migração (se sua DB antiga não tiver appeal_message_id)
+            try:
+                cur.execute("ALTER TABLE settings ADD COLUMN appeal_message_id INTEGER")
+            except Exception:
+                pass
+
             con.commit()
             con.close()
 
         await asyncio.to_thread(_init)
         self._init_done = True
 
-    async def create_punishment(
-        self,
-        guild_id: int,
-        user: discord.Member,
-        staff: discord.Member,
-        reason: str,
-        duration_sec: int
-    ) -> int:
+    async def create_punishment(self, guild_id: int, user: discord.Member, staff: discord.Member, reason: str, duration_sec: int) -> int:
         created = int(now_utc().timestamp())
         ends_at = None
         if duration_sec > 0:
@@ -159,7 +161,6 @@ class PunishDB:
         def _do():
             con = sqlite3.connect(self.path)
             cur = con.cursor()
-            # pega a última ativa
             cur.execute("""
                 SELECT id FROM punishments
                 WHERE guild_id=? AND user_id=? AND active=1
@@ -213,7 +214,6 @@ class PunishDB:
         return await asyncio.to_thread(_do)
 
     async def expire_due(self, guild_id: int) -> list[int]:
-        """Desativa punições vencidas (não-perma) e retorna IDs expirados."""
         ts = int(now_utc().timestamp())
 
         def _do():
@@ -254,31 +254,36 @@ class PunishDB:
 
         return await asyncio.to_thread(_do)
 
-    async def upsert_settings(self, guild_id: int, panel_message_id: int | None = None, status_message_id: int | None = None):
+    async def upsert_settings(self, guild_id: int, panel_message_id=None, appeal_message_id=None, status_message_id=None):
         def _do():
             con = sqlite3.connect(self.path)
             cur = con.cursor()
-            cur.execute("SELECT guild_id, panel_message_id, status_message_id FROM settings WHERE guild_id=?", (guild_id,))
+            cur.execute("SELECT guild_id, panel_message_id, appeal_message_id, status_message_id FROM settings WHERE guild_id=?", (guild_id,))
             row = cur.fetchone()
+
             if row:
                 pm = panel_message_id if panel_message_id is not None else row[1]
-                sm = status_message_id if status_message_id is not None else row[2]
+                am = appeal_message_id if appeal_message_id is not None else row[2]
+                sm = status_message_id if status_message_id is not None else row[3]
                 cur.execute("""
-                    UPDATE settings SET panel_message_id=?, status_message_id=? WHERE guild_id=?
-                """, (pm, sm, guild_id))
+                    UPDATE settings SET panel_message_id=?, appeal_message_id=?, status_message_id=? WHERE guild_id=?
+                """, (pm, am, sm, guild_id))
             else:
                 cur.execute("""
-                    INSERT INTO settings (guild_id, panel_message_id, status_message_id) VALUES (?, ?, ?)
-                """, (guild_id, panel_message_id, status_message_id))
+                    INSERT INTO settings (guild_id, panel_message_id, appeal_message_id, status_message_id)
+                    VALUES (?, ?, ?, ?)
+                """, (guild_id, panel_message_id, appeal_message_id, status_message_id))
+
             con.commit()
             con.close()
+
         await asyncio.to_thread(_do)
 
     async def get_settings(self, guild_id: int):
         def _do():
             con = sqlite3.connect(self.path)
             cur = con.cursor()
-            cur.execute("SELECT panel_message_id, status_message_id FROM settings WHERE guild_id=?", (guild_id,))
+            cur.execute("SELECT panel_message_id, appeal_message_id, status_message_id FROM settings WHERE guild_id=?", (guild_id,))
             row = cur.fetchone()
             con.close()
             return row
@@ -291,19 +296,13 @@ class PunishDB:
 def has_role(member: discord.Member, role_id: int) -> bool:
     return any(r.id == role_id for r in member.roles)
 
+
 def can_manage(member: discord.Member) -> bool:
-    # gerência ou admin
     if member.guild_permissions.administrator:
         return True
     if IDS.PUNISH_MANAGER_ROLE_ID and has_role(member, IDS.PUNISH_MANAGER_ROLE_ID):
         return True
     return False
-
-def is_staff(member: discord.Member) -> bool:
-    if IDS.STAFF_ROLE_ID and has_role(member, IDS.STAFF_ROLE_ID):
-        return True
-    # fallback: se não setar STAFF_ROLE_ID, exige ao menos permissão moderadora
-    return member.guild_permissions.manage_guild or member.guild_permissions.manage_roles
 
 
 # -------------------------
@@ -337,7 +336,6 @@ class ApplyPunishmentModal(discord.ui.Modal, title="Aplicar punição"):
         if IDS.STAFF_ROLE_ID and not has_role(member, IDS.STAFF_ROLE_ID):
             return await interaction.response.send_message("Esse usuário não parece ser STAFF (cargo não encontrado).", ephemeral=True)
 
-        # impede punir gerência/admin por acidente (ajuste se quiser)
         if can_manage(member) and not interaction.user.guild_permissions.administrator:
             return await interaction.response.send_message("Não vou punir gerência/admin por aqui.", ephemeral=True)
 
@@ -349,10 +347,8 @@ class ApplyPunishmentModal(discord.ui.Modal, title="Aplicar punição"):
         reason = str(self.reason.value).strip()
         pid = await self.cog.db.create_punishment(interaction.guild.id, member, interaction.user, reason, dur)
 
-        # resposta
         await interaction.response.send_message(f"✅ Punição aplicada com sucesso. ID #{pid}", ephemeral=True)
 
-        # logs + update tabela
         await self.cog.log_punishment_applied(interaction.guild, pid)
         await self.cog.refresh_status_board(interaction.guild)
 
@@ -426,7 +422,7 @@ class ConsultPunishmentModal(discord.ui.Modal, title="Consultar punição"):
 
 
 # -------------------------
-# UI: Painel
+# UI: Painéis (Views)
 # -------------------------
 class PunishPanelView(discord.ui.View):
     def __init__(self, cog: "PunicoesCog"):
@@ -472,7 +468,6 @@ class AppealModal(discord.ui.Modal, title="Recorrer punição"):
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             return await interaction.response.send_message("Só funciona no servidor.", ephemeral=True)
 
-        # precisa ter punição ativa
         row = await self.cog.db.get_active_punishment(interaction.guild.id, interaction.user.id)
         if not row:
             return await interaction.response.send_message("Você não tem punição ativa para recorrer.", ephemeral=True)
@@ -487,8 +482,6 @@ class AppealModal(discord.ui.Modal, title="Recorrer punição"):
         )
 
         await interaction.response.send_message(f"✅ Recurso aberto! (Recurso #{aid} / Punição #{pid})", ephemeral=True)
-
-        # manda um resumo no canal de recurso e logs
         await self.cog.post_appeal_summary(interaction.guild, interaction.user, pid, aid, str(self.proof.value).strip())
 
 
@@ -513,12 +506,14 @@ class PunicoesCog(commands.Cog):
         self.db = PunishDB()
         self.expire_task.start()
 
-        # Views persistentes
+        # Views persistentes (pra botões funcionarem após restart)
         self.bot.add_view(PunishPanelView(self))
         self.bot.add_view(AppealView(self))
 
     async def cog_load(self):
         await self.db.init()
+        # cria automaticamente os 3 painéis assim que o bot estiver pronto
+        self.bot.loop.create_task(self._auto_setup_all_guilds())
 
     def cog_unload(self):
         self.expire_task.cancel()
@@ -528,6 +523,88 @@ class PunicoesCog(commands.Cog):
         c = guild.get_channel(channel_id)
         return c if isinstance(c, discord.TextChannel) else None
 
+    async def _auto_setup_all_guilds(self):
+        await self.bot.wait_until_ready()
+        for guild in self.bot.guilds:
+            try:
+                await self.ensure_panels(guild)
+            except Exception as e:
+                print(f"⚠️ [Punicoes] Falha ao garantir painéis no guild {guild.id}: {type(e).__name__}: {e}")
+
+    async def ensure_panels(self, guild: discord.Guild):
+        """
+        Garante automaticamente:
+        1) Painel Registro (botões aplicar/remover/consultar)
+        2) Painel Recorrer (botão abrir recurso)
+        3) Mensagem da Tabela (status)
+        Sem comando. Sem spam: edita se existir, cria se não existir.
+        """
+        await self.db.init()
+
+        reg_ch = self.ch(guild, IDS.PUNISH_REG_CHANNEL_ID)
+        appeal_ch = self.ch(guild, IDS.PUNISH_APPEAL_CHANNEL_ID)
+        status_ch = self.ch(guild, IDS.PUNISH_STATUS_CHANNEL_ID)
+
+        if not reg_ch or not appeal_ch or not status_ch:
+            print(f"⚠️ [Punicoes] Canais inválidos no guild {guild.id}. Verifique config/ids.py (IDs dos 3 canais).")
+            return
+
+        settings = await self.db.get_settings(guild.id)
+        panel_msg_id = settings[0] if settings else None
+        appeal_msg_id = settings[1] if settings else None
+        # status_msg_id = settings[2]  (o refresh_status_board lida com isso)
+
+        # ---- Painel Registro ----
+        panel_embed = discord.Embed(
+            title="🛡️ Registro de Punições (STAFF)",
+            description=(
+                "Use os botões abaixo para **aplicar**, **remover** ou **consultar** punições.\n\n"
+                "⚠️ Somente gerência/direção pode aplicar/remover."
+            ),
+            color=discord.Color.dark_gold()
+        )
+        panel_embed.set_footer(text="Bronks Games • Painel oficial")
+
+        panel_msg = None
+        if panel_msg_id:
+            try:
+                panel_msg = await reg_ch.fetch_message(panel_msg_id)
+                await panel_msg.edit(embed=panel_embed, view=PunishPanelView(self))
+            except Exception:
+                panel_msg = None
+
+        if not panel_msg:
+            panel_msg = await reg_ch.send(embed=panel_embed, view=PunishPanelView(self))
+            await self.db.upsert_settings(guild.id, panel_message_id=panel_msg.id)
+
+        # ---- Painel Recorrer ----
+        appeal_embed = discord.Embed(
+            title="📨 Recorrer punição",
+            description=(
+                "Se você foi punido e quer recorrer, clique no botão abaixo e explique.\n"
+                "Cole links (clips/prints) no texto do recurso."
+            ),
+            color=discord.Color.blurple()
+        )
+        appeal_embed.set_footer(text="Bronks Games • Recurso de punição")
+
+        appeal_msg = None
+        if appeal_msg_id:
+            try:
+                appeal_msg = await appeal_ch.fetch_message(appeal_msg_id)
+                await appeal_msg.edit(embed=appeal_embed, view=AppealView(self))
+            except Exception:
+                appeal_msg = None
+
+        if not appeal_msg:
+            appeal_msg = await appeal_ch.send(embed=appeal_embed, view=AppealView(self))
+            await self.db.upsert_settings(guild.id, appeal_message_id=appeal_msg.id)
+
+        # ---- Tabela / Status ----
+        await self.refresh_status_board(guild)
+
+        print(f"✅ [Punicoes] Painéis garantidos no guild {guild.id}")
+
     async def log_embed(self, guild: discord.Guild, embed: discord.Embed):
         log_ch = self.ch(guild, IDS.PUNISH_LOG_CHANNEL_ID)
         if log_ch:
@@ -535,7 +612,6 @@ class PunicoesCog(commands.Cog):
 
     # ----------- Logs detalhados -----------
     async def log_punishment_applied(self, guild: discord.Guild, pid: int):
-        # busca punição
         rows = await self.db.list_active(guild.id)
         row = next((r for r in rows if r[0] == pid), None)
         if not row:
@@ -560,7 +636,6 @@ class PunicoesCog(commands.Cog):
         await self.log_embed(guild, embed)
 
     async def log_punishment_removed(self, guild: discord.Guild, pid: int):
-        # precisamos ler do banco diretamente (pode não estar ativa)
         def _do():
             con = sqlite3.connect(self.db.path)
             cur = con.cursor()
@@ -616,7 +691,6 @@ class PunicoesCog(commands.Cog):
         if appeal_ch:
             await appeal_ch.send(embed=embed)
 
-        # logs também
         await self.log_embed(guild, embed)
 
     # ----------- Status board -----------
@@ -634,7 +708,6 @@ class PunicoesCog(commands.Cog):
             embed.description = "✅ Nenhuma punição ativa no momento."
             return embed
 
-        # mostra até 20 por embed (simples). Se quiser paginação depois, dá.
         lines = []
         for (pid, user_id, user_tag, staff_id, staff_tag, reason, created_at, duration_sec, ends_at) in rows[:20]:
             created_dt = datetime.fromtimestamp(created_at, tz=UTC)
@@ -664,7 +737,7 @@ class PunicoesCog(commands.Cog):
             return
 
         settings = await self.db.get_settings(guild.id)
-        status_msg_id = settings[1] if settings else None
+        status_msg_id = settings[2] if settings else None
 
         embed = await self.build_status_embed(guild)
 
@@ -676,7 +749,6 @@ class PunicoesCog(commands.Cog):
         except Exception:
             pass
 
-        # cria nova msg e salva
         msg = await status_ch.send(embed=embed)
         await self.db.upsert_settings(guild.id, status_message_id=msg.id)
 
@@ -687,63 +759,13 @@ class PunicoesCog(commands.Cog):
         for guild in self.bot.guilds:
             expired_ids = await self.db.expire_due(guild.id)
             if expired_ids:
-                # loga e atualiza tabela
                 for pid in expired_ids:
-                    # log como removida pelo sistema
                     await self.log_punishment_removed(guild, pid)
                 await self.refresh_status_board(guild)
 
     @expire_task.before_loop
     async def before_expire(self):
         await self.bot.wait_until_ready()
-
-    # -------------------------
-    # Slash: setup (manda painel e botão de recurso)
-    # -------------------------
-    @app_commands.command(name="punicoes_setup", description="Cria/atualiza as mensagens do painel e do recurso.")
-    async def punicoes_setup(self, interaction: discord.Interaction):
-        if not interaction.guild or not isinstance(interaction.user, discord.Member):
-            return await interaction.response.send_message("Só funciona no servidor.", ephemeral=True)
-        if not can_manage(interaction.user):
-            return await interaction.response.send_message("Sem permissão.", ephemeral=True)
-
-        await self.db.init()
-
-        reg_ch = self.ch(interaction.guild, IDS.PUNISH_REG_CHANNEL_ID)
-        appeal_ch = self.ch(interaction.guild, IDS.PUNISH_APPEAL_CHANNEL_ID)
-
-        if not reg_ch or not appeal_ch:
-            return await interaction.response.send_message(
-                "Configura os IDs dos canais em `config/ids.py` (registro e recorrer).",
-                ephemeral=True
-            )
-
-        panel_embed = discord.Embed(
-            title="🛡️ Painel de Punições da STAFF",
-            description=(
-                "Use os botões abaixo para **aplicar**, **remover** ou **consultar** punições.\n\n"
-                "⚠️ Somente gerência/direção pode aplicar/remover."
-            ),
-            color=discord.Color.dark_gold()
-        )
-        panel_embed.set_footer(text="Bronks Games • Painel oficial")
-
-        panel_msg = await reg_ch.send(embed=panel_embed, view=PunishPanelView(self))
-        await self.db.upsert_settings(interaction.guild.id, panel_message_id=panel_msg.id)
-
-        appeal_embed = discord.Embed(
-            title="📨 Recorrer punição",
-            description=(
-                "Se você foi punido e quer recorrer, clique no botão abaixo e explique.\n"
-                "Cole links (clips/prints) no texto do recurso."
-            ),
-            color=discord.Color.blurple()
-        )
-        await appeal_ch.send(embed=appeal_embed, view=AppealView(self))
-
-        await self.refresh_status_board(interaction.guild)
-
-        await interaction.response.send_message("✅ Setup feito: painel + recurso + status.", ephemeral=True)
 
 
 async def setup(bot: commands.Bot):
