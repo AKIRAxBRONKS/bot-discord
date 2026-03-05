@@ -142,6 +142,7 @@ async def setup_hook():
         "systems.welcome_logs",
         "systems.indicacoes",
         "systems.liberar_id",
+        "systems.punicoes",
     ]
 
     for ext in extensoes:
