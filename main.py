@@ -1,31 +1,24 @@
-import platform, struct, os
+import platform
+import struct
+import os
+import logging
+import subprocess
+import asyncio
 
+import discord
+from discord.ext import commands
+from dotenv import load_dotenv
+
+# =====================
+# LOGS BÁSICOS
+# =====================
 print("SYSTEM:", platform.system(), flush=True)
 print("ARCH (host):", platform.machine(), flush=True)
 
-import logging
-
 logging.basicConfig(level=logging.INFO)
 
-@bot.event
-async def on_connect():
-    print("✅ Conectou ao Gateway (on_connect)")
-
-@bot.event
-async def on_disconnect():
-    print("⚠️ Desconectou do Gateway (on_disconnect)")
-
-@bot.event
-async def on_resumed():
-    print("🔁 Sessão retomada (on_resumed)")
-
-@bot.event
-async def on_ready():
-    print(f"🤖 Bot online como {bot.user} (ID: {bot.user.id})")
-
-
 # =====================
-# DIAGNÓSTICO CLOUDFLARED (opcional, mas ajuda)
+# DIAGNÓSTICO CLOUDFLARED (opcional)
 # =====================
 path = "./cloudflared"
 if not os.path.exists(path):
@@ -38,7 +31,7 @@ else:
         print("cloudflared: NÃO É ELF (arquivo errado/corrompido). Primeiros bytes:", head[:8], flush=True)
     else:
         ei_class = head[4]  # 1=32bit, 2=64bit
-        ei_data  = head[5]  # 1=little, 2=big
+        ei_data = head[5]   # 1=little, 2=big
         endian = "<" if ei_data == 1 else ">"
         e_machine = struct.unpack(endian + "H", head[18:20])[0]
 
@@ -53,11 +46,6 @@ else:
             flush=True
         )
 
-import subprocess
-import discord
-from discord.ext import commands
-from dotenv import load_dotenv
-
 # =====================
 # CARREGA VARIÁVEIS
 # =====================
@@ -70,17 +58,15 @@ if not TOKEN:
 # =====================
 # CLOUDFLARED (TUNNEL)
 # =====================
-# Expor sua API local (http://127.0.0.1:35555) pra um link público trycloudflare
 CLOUDFLARED_BIN = "./cloudflared"
 CLOUDFLARED_URL = "http://127.0.0.1:35555"
-
 _cloudflared_proc = None
 
 
-def start_cloudflared():
+def start_cloudflared_blocking():
     """
-    Inicia o cloudflared e imprime o link trycloudflare no console.
-    Não trava o bot se falhar.
+    Inicia o cloudflared e tenta capturar o link trycloudflare no stdout.
+    ATENÇÃO: Essa função bloqueia enquanto lê stdout, por isso chamamos ela em thread.
     """
     global _cloudflared_proc
 
@@ -91,7 +77,7 @@ def start_cloudflared():
 
     if not os.path.exists(CLOUDFLARED_BIN):
         print(f"⚠️ Cloudflared não encontrado em {CLOUDFLARED_BIN}.")
-        print("   👉 Suba o arquivo correto (ex: cloudflared-linux-arm64) e renomeie para 'cloudflared'.")
+        print("   👉 Suba o arquivo correto e renomeie para 'cloudflared'.")
         return
 
     try:
@@ -111,18 +97,17 @@ def start_cloudflared():
             bufsize=1,
         )
 
-        # ✅ Agora lê até encontrar o LINK (ele aparece algumas linhas depois)
         found = False
-        for line in _cloudflared_proc.stdout:
-            line = (line or "").strip()
-            if line:
-                print(f"[cloudflared] {line}")
+        if _cloudflared_proc.stdout:
+            for line in _cloudflared_proc.stdout:
+                line = (line or "").strip()
+                if line:
+                    print(f"[cloudflared] {line}")
 
-            # o link geralmente vem como https://xxxx.trycloudflare.com
-            if "https://" in line and "trycloudflare.com" in line:
-                print("🔥 LINK DO TUNNEL ACIMA 🔥 (copie e coloque no BOT_CHECK_URL do server.lua)")
-                found = True
-                break
+                if "https://" in line and "trycloudflare.com" in line:
+                    print("🔥 LINK DO TUNNEL ACIMA 🔥 (copie e coloque no BOT_CHECK_URL do server.lua)")
+                    found = True
+                    break
 
         if not found:
             print("⚠️ Cloudflared iniciou, mas não consegui capturar o link no log (verifique as linhas acima).")
@@ -133,6 +118,12 @@ def start_cloudflared():
         print(f"❌ Erro ao iniciar cloudflared: {type(e).__name__}: {e}")
         _cloudflared_proc = None
 
+
+async def start_cloudflared_async():
+    """
+    Roda o start_cloudflared_blocking em thread pra não travar o bot.
+    """
+    await asyncio.to_thread(start_cloudflared_blocking)
 
 # =====================
 # INTENTS
@@ -150,11 +141,25 @@ bot = commands.Bot(
 )
 
 # =====================
+# EVENTOS DE DIAGNÓSTICO (agora bot existe)
+# =====================
+@bot.event
+async def on_connect():
+    print("✅ Conectou ao Gateway (on_connect)")
+
+@bot.event
+async def on_disconnect():
+    print("⚠️ Desconectou do Gateway (on_disconnect)")
+
+@bot.event
+async def on_resumed():
+    print("🔁 Sessão retomada (on_resumed)")
+
+# =====================
 # SETUP AUTOMÁTICO
 # =====================
 @bot.event
 async def setup_hook():
-
     extensoes = [
         "systems.tickets",
         "systems.ranking",
@@ -172,6 +177,10 @@ async def setup_hook():
             print(f"✅ Extensão carregada: {ext}")
         except Exception as e:
             print(f"❌ Erro ao carregar {ext}: {type(e).__name__}: {e}")
+
+    # inicia cloudflared sem travar o bot
+    # (se você não quiser, comenta essa linha)
+    await start_cloudflared_async()
 
     # sync slash (se usar)
     try:
